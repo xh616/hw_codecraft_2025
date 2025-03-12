@@ -3,14 +3,14 @@
 #include "common.h"
 
 #include "HandlerImpl_sample.h"
-
+#include "HandlerImpl_tzx.h"
 
 int main() {
   unique_ptr<IHandler> handler;
-  handler = make_unique<HandlerImpl_sample>();
+  handler = make_unique<HandlerImpl_tzx>();
 
 #ifdef DEBUG
-  print_log("DEBUG MODE, main() start, handler: " + handler->name());
+  print_log("DEBUG MODE, main() start, handler: %s\n", handler->name().c_str());
 #endif
 
   handler->InPut_Global_Var();// scanf("%d%d%d%d%d", &T, &M, &N, &V, &G);
