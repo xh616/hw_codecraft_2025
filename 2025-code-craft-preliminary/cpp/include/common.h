@@ -26,7 +26,6 @@ using namespace std;
 #define MAX_OBJECT_BLOCK_NUM (5 + 1)
 
 // global functions
-#ifdef DEBUG
 static inline void print_log(const char *format, ...) {
   va_list args;
   va_start(args, format);
@@ -35,10 +34,6 @@ static inline void print_log(const char *format, ...) {
   fprintf(stderr, "\033[0m");    // 恢复默认颜色
   va_end(args);
 }
-#else
-static inline void print_log([[maybe_unused]] const string &msg) {
-}
-#endif
 
 template<typename T>
 class ConcurrencyQueue {

@@ -6,6 +6,7 @@
 #define HW_CODECRAFT_2025_HANDLERIMPL2_DEFAULT_H
 
 #include "IHandler.h"
+#include <cmath>
 #include <map>
 #include <sstream>
 
@@ -63,7 +64,7 @@ private:
     }
     auto finish_sub_request(int block_id) {
       sub_block_requests[block_id].is_done = true;
-      if(is_done()){
+      if (is_done()) {
         // 如果所有的子请求都完成了，就将这个请求放入到请求队列中
         tzx_request_queue.push(this->id);
       }
@@ -191,6 +192,10 @@ private:
       return min(len, V) - get_range_used_cnt(point, len);
     }
 
+    auto Get_free_unit_cnt() const {
+      return V - seg[1];
+    }
+
     // 返回磁头到目标位置的距离
     auto Get_distance(int target_unit) const {
       // 计算距离
@@ -231,7 +236,7 @@ private:
 
     // TODO(决策点): 在当前磁盘插入obj对象的第num个副本。插入操作仅需分配空间，不需要移动磁头。
     auto InsertObject(const Object &obj, int num) {
-//            _InsertObject_seq(obj, num, -1, (num - 1) * G);
+      //            _InsertObject_seq(obj, num, -1, (num - 1) * G);
       _InsertObject_disperse(obj, num, -1, (num - 1) * G);
     }
 
@@ -245,29 +250,34 @@ private:
     }
 
     // TODO(决策点): 磁头如何工作？返回动作序列，以#结尾。
-    auto work() -> string {
+    auto Work() -> string {
       g = G;
       stringstream ss;
 
-      // 如果当前磁盘没有读请求，直接返回。可以优化策略
-      if (unitId2Request_SubBlockRequests.empty()) {
+
+      auto next_distance = [&]() {
+        if (unitId2Request_SubBlockRequests.empty()) {
+          return make_pair(-1, -1);
+        }
+        // Use binary search (lower_bound) on the sorted map to find the first unit with a read request
+        auto it = unitId2Request_SubBlockRequests.lower_bound(point);
+        int target_unit = -1;
+        if (it != unitId2Request_SubBlockRequests.end()) {
+          target_unit = it->first;
+        } else {
+          // Wrap around: take the first key if none found beyond the current head
+          target_unit = unitId2Request_SubBlockRequests.begin()->first;
+        }
+
+        // 磁头到下一个有读请求的unit的距离
+        return make_pair(target_unit, (target_unit >= point) ? (target_unit - point) : (V - point + target_unit));
+      };
+      auto [target_unit, distance] = next_distance();
+      // 如果当前磁盘没有读请求，直接返回。可以优化
+      if (target_unit == -1) {
         ss << '#';
         return ss.str();
       }
-
-      // Use binary search (lower_bound) on the sorted map to find the first unit with a read request
-      auto it = unitId2Request_SubBlockRequests.lower_bound(point);
-      int target_unit = -1;
-      if (it != unitId2Request_SubBlockRequests.end()) {
-        target_unit = it->first;
-      } else {
-        // Wrap around: take the first key if none found beyond the current head
-        target_unit = unitId2Request_SubBlockRequests.begin()->first;
-      }
-
-      // Calculate distance to target_unit (circularly)
-      int distance = (target_unit >= point) ? (target_unit - point) : (V - point + target_unit);
-
 #ifdef DEBUG
       print_log("disk: %d ", id);
       print_log("target_unit: %d, point: %d, distance: %d\n", target_unit, point, distance);
@@ -275,33 +285,69 @@ private:
 
       if (distance >= G) {
         // 下一个有请求的unit在当前磁头位置G个位置之外，直接移动磁头到目标位置。
+        point = target_unit;
+        is_reading = false;
         ss << "j " << target_unit;
         return ss.str();
       }
-      while (g > 0) {
+
+      while (g > 0 && distance != -1) {
         if (distance > 0 && g > 0) {
+          // 磁头移动到下一个unit,p
           is_reading = false;
           ss << 'p';
           point = point % V + 1;
           g--;
           distance--;
-        } else if (g >= 64) {
-          ss << 'r';
-
-          // 完成当前point下所有的读请求
-          for (auto &[request, sub_request]: unitId2Request_SubBlockRequests[point]) {
-            request->finish_sub_request(sub_request->block_id);
-          }
-          unitId2Request_SubBlockRequests.erase(point);
-
-          point = point % V + 1;
-          is_reading = true;
-          g -= 64;
         } else {
-          break;
+          // 已经到达了有读请求的unit
+          if (!is_reading && g >= 64) {
+            // 磁头上一次动作不是Read
+            ss << 'r';
+            is_reading = true;
+            g -= 64;
+            pre_token = 64;
+
+#ifdef DEBUG
+            print_log("disk %d, unit[%d]: (%d, %d)\n", id, point, unit[point].object_id, unit[point].block_id);
+#endif
+
+            // 完成当前point下所有的读请求
+            for (auto &[request, sub_request]: unitId2Request_SubBlockRequests[point]) {
+              request->finish_sub_request(sub_request->block_id);
+            }
+            unitId2Request_SubBlockRequests.erase(point);
+            point = point % V + 1;
+            // update distance to next unit_id
+            auto [f, s] = next_distance();
+            target_unit = f;
+            distance = s;
+          } else if (is_reading && g >= max(16.0, ceil(pre_token * 0.8))) {
+            ss << 'r';
+            int need_token = max(16.0, ceil(pre_token * 0.8));
+            g -= need_token + 1;
+            pre_token = need_token;
+
+#ifdef DEBUG
+            print_log("disk %d, unit[%d]: (%d, %d)\n", id, point, unit[point].object_id, unit[point].block_id);
+#endif
+
+            // 完成当前point下所有的读请求
+            for (auto &[request, sub_request]: unitId2Request_SubBlockRequests[point]) {
+              request->finish_sub_request(sub_request->block_id);
+            }
+            unitId2Request_SubBlockRequests.erase(point);
+            point = point % V + 1;
+            // update distance to next unit_id
+            auto [f, s] = next_distance();
+            target_unit = f;
+            distance = s;
+          } else {
+            // 剩余token不足，磁头不动
+            break;
+          }
         }
       }
-
 
       ss << '#';
 #ifdef DEBUG
@@ -312,7 +358,6 @@ private:
     }
 
     auto Print() {
-#ifdef DEBUG
       print_log("Disk %d, point: %d, is_reading: %s\n", id, point, is_reading ? "↓" : "↑");
       for (int i = 1; i <= V; i++) {
         if (used[i] == 1) {
@@ -322,7 +367,6 @@ private:
         }
       }
       print_log("\n");
-#endif
     }
   };
 
@@ -338,7 +382,6 @@ public:
       disks[i] = make_unique<Disk>(i, V, G);
     }
   }
-
 
 
   int Input_Global_Tag_Info() override {
@@ -435,11 +478,11 @@ public:
       objects[id].is_delete = false;
 
       // TODO(决策点): 选REP_NUM个不同的硬盘，返回一个数组array<int, REP_NUM + 1>，表示选择的硬盘编号。
-      // 当前策略：选择3个磁头后G个位置空闲最多的磁盘。
       auto get_disks_num = [&]() {
-        vector<pair<int, int>> disk_free_cnt(N + 1);
+        vector<pair<int, int>> disk_free_cnt;
         for (int j = 1; j <= N; j++) {
-          disk_free_cnt[j] = {disks[j]->Get_range_free_cnt(), j};
+          //          disk_free_cnt.emplace_back(make_pair(disks[j]->Get_range_free_cnt(), j));// 选择磁头后G个位置空闲最多的磁盘。
+          disk_free_cnt.emplace_back(make_pair(disks[j]->Get_free_unit_cnt(), j));// 选择空闲空间最多的磁盘。
         }
         sort(disk_free_cnt.begin(), disk_free_cnt.end(), [&](const pair<int, int> &a, const pair<int, int> &b) {
           return a.first > b.first;
@@ -463,6 +506,7 @@ public:
         }
         printf("\n");
       }
+
 #ifdef DEBUG
       print_log("timestamp: %d\n", timestamp);
       print_log("inserted object %d, size: %d, tag: %d\n", id, size, tag);
@@ -480,19 +524,19 @@ public:
     int n_read;
     int request_id, object_id;
     scanf("%d", &n_read);
-    vector<Request *> curr_requests(n_read + 1);
+    vector<int> curr_requests(n_read + 1);
     // 读入请求，构造Request对象，维护每个对象的last_request_point。
     for (int i = 1; i <= n_read; i++) {
       scanf("%d%d", &request_id, &object_id);
       requests[request_id] = Request(request_id, object_id, objects[object_id].size);
       requests[request_id].prev_id = objects[object_id].last_request_point;
       objects[object_id].last_request_point = request_id;
-      curr_requests[i] = &requests[request_id];
+      curr_requests[i] = request_id;
     }
 
     // TODO(决策点): 对于每一个对象块，构造具体的子请求，选择一个磁盘和一个磁盘位置 && 维护对象之间的关系。
     for (int read_id = 1; read_id <= n_read; read_id++) {
-      auto &request = *curr_requests[read_id];
+      auto &request = requests[curr_requests[read_id]];
       auto &object = objects[request.object_id];
       for (int _block_id = 1; _block_id <= object.size; _block_id++) {
         // 为第_block_id个对象块选择一个磁盘和磁盘位置。
@@ -504,24 +548,31 @@ public:
           auto &disk = disks[object.replica[k]];
           int unit_id = object.unit[k][_block_id];
           auto dist = disk->Get_distance(unit_id);
-          disk_point_dist[k] = {dist, disk->id};
+          disk_point_dist[k] = {dist, k};
         }
         sort(disk_point_dist.begin() + 1, disk_point_dist.end(), [&](const pair<int, int> &a, const pair<int, int> &b) {
           return a.first < b.first;
         });
         // 选择第一个副本
-        _disk_id = disk_point_dist[1].second;
+        _disk_id = object.replica[disk_point_dist[1].second];
         // 选择第一个副本的unit_id
         _unit_id = object.unit[disk_point_dist[1].second][_block_id];
         request.set_sub_request(_block_id, _disk_id, _unit_id);
         // 维护disk
         disks[_disk_id]->add_sub_block_request(request, _block_id);
       }
+#ifdef DEBUG
+      print_log("timestamp: %d request_id: %d, object_id: %d\n", timestamp, request_id, object.id);
+      for (int j = 1; j <= object.size; j++) {
+        print_log("block_id: %d, disk_id: %d, unit_id: %d\n", j, request.sub_block_requests[j].disk_id, request.sub_block_requests[j].unit_id);
+      }
+#endif
     }
+
 
     // 将已经构造好的请求与object进行关联
     for (int read_id = 1; read_id <= n_read; read_id++) {
-      auto &request = *curr_requests[read_id];
+      auto &request = requests[curr_requests[read_id]];
       auto &object = objects[request.object_id];
       object.add_request(request);
     }
@@ -529,7 +580,7 @@ public:
     // 对每个磁头进行移动
     for (int disk_id = 1; disk_id <= N; disk_id++) {
       auto &disk = disks[disk_id];
-      printf("%s\n", disk->work().c_str());
+      printf("%s\n", disk->Work().c_str());
     }
 
 
@@ -539,11 +590,21 @@ public:
       auto request_id = tzx_request_queue.pop();
       finished_requests.push_back(request_id);
     }
-
-    printf("%d\n", finished_requests.size());
+    printf("%ld\n", finished_requests.size());
     for (const auto request_id: finished_requests) {
+#ifdef DEBUG
+      print_log("requset finished: %d\n", request_id);
+#endif
       printf("%d\n", request_id);
     }
+
+#ifdef DEBUG
+    print_log("timestamp: %d\nDisk head position: ", timestamp);
+    for (int i = 1; i <= N; i++) {
+      print_log("[%d]%d ", i, disks[i]->point);
+    }
+    print_log("\n");
+#endif
 
     fflush(stdout);
   }

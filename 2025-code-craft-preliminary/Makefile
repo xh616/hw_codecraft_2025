@@ -47,4 +47,7 @@ endif
 
 # usage: make submit P="TZXSUBMIT"
 submit:
+	@if head -n 1 $(CODE_PATH)/main.cpp | grep -q "^#define DEBUG"; then \
+		echo "\033[1;31merror: packaging aborted due to DEBUG flag\033[0m"; exit 1; \
+	fi
 	(cd $(CODE_PATH) && zip -r ../$(SUBMIT_PREFIX)_$(shell date +%m%d_%H%M%S).zip * -x "cmake*" -x "$(EXECUTABLE)")
