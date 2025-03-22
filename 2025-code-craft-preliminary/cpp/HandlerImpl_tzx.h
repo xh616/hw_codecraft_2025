@@ -10,6 +10,12 @@
 #include <map>
 #include <sstream>
 
+extern int timestamp;// 当前时间戳
+extern int T;        // 时间片数量，范围 1 ≤ T ≤ 86400
+extern int M;        // 对象标签数量，对象标签编号为1 ~ 𝑀，范围 1 ≤ M ≤ 16
+extern int N;        // 硬盘个数，硬盘编号为1 ~ 𝑁，范围 3 ≤ N ≤ 10
+extern int V;        // 每个硬盘的存储单元数，存储单元编号为1 ~ 𝑉，范围 1 ≤ V ≤ 16384，且至少保留10%的空闲空间
+extern int G;        // 每个磁头在每个时间片可消耗的令牌数，范围 64 ≤ G ≤ 1000
 // 并发安全的请求队列，为了方便写成全局变量
 ConcurrencyQueue<int> tzx_request_queue;
 

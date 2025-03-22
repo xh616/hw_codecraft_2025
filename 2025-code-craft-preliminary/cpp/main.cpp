@@ -24,13 +24,13 @@ int main() {
 
   handler->Init_Disk_Point();
 
-  for (int t = 1; t <= handler->T + EXTRA_TIME; t++) {
+  for (int t = 1; t <= T + EXTRA_TIME; t++) {
     handler->Timestamp_action();
     handler->Delete_action();
     handler->Write_action();
     handler->Read_action();
   }
 
-//  handler->End();
+  handler->End();
   return 0;
 }

@@ -12,6 +12,13 @@
 #include <set>
 #include <sstream>
 
+extern int timestamp;// 当前时间戳
+extern int T;        // 时间片数量，范围 1 ≤ T ≤ 86400
+extern int M;        // 对象标签数量，对象标签编号为1 ~ 𝑀，范围 1 ≤ M ≤ 16
+extern int N;        // 硬盘个数，硬盘编号为1 ~ 𝑁，范围 3 ≤ N ≤ 10
+extern int V;        // 每个硬盘的存储单元数，存储单元编号为1 ~ 𝑉，范围 1 ≤ V ≤ 16384，且至少保留10%的空闲空间
+extern int G;        // 每个磁头在每个时间片可消耗的令牌数，范围 64 ≤ G ≤ 1000
+
 // 并发安全的请求队列，为了方便写成全局变量
 ConcurrencyQueue<int> tzx2_request_queue;
 
@@ -96,10 +103,6 @@ private:
 
   public:
     int id;
-    //每个硬盘的存储单元数，存储单元编号为1 ~ 𝑉，范围 1 ≤ V ≤ 16384
-    int V;
-    // G：每个磁头在每个时间片可消耗的令牌数，范围 64 ≤ G ≤ 1000
-    int G;
     // g: 当前时间片剩余的token
     int g;
     // pre_token: 磁头上一次动作消耗的令牌数
@@ -193,7 +196,7 @@ private:
 
   public:
     // Constructor to initialize used[]
-    Disk(int _id, int _V, int _G) : point(1), id(_id), V(_V), G(_G) {
+    Disk(int _id) : point(1), id(_id) {
       for (int i = 1; i <= V; i++) {
         used[i] = 0;
         unit[i] = {-1, -1};
@@ -292,9 +295,12 @@ private:
       index = index == -1 ? point : index;
       int current_point = (index + offset) % V + 1;
       for (int i = 1; i <= obj.size; i++) {
+        if (Get_free_unit_cnt() == 0) {
+          cerr << "Disk " << id << " is full!" << endl;
+          assert(false);
+        }
         int idx = ((current_point - 1) + (i - 1) + V) % V + 1;
         // 找到第一个空闲位置
-        // TODO：有可能会死循环！！！
         while (used[idx] == 1) {
           current_point = (current_point) % V + 1;
           idx = ((current_point - 1) + (i - 1) + V) % V + 1;
@@ -305,9 +311,11 @@ private:
     }
 
     // TODO(决策点): 在当前磁盘插入obj对象的第num个副本。插入操作仅需分配空间，不需要移动磁头。
-    auto InsertObject(const Object &obj, int num) {
+    auto InsertObject(const Object &obj, int num, int offset = -1) {
+      offset = offset == -1 ? (1.0 * (obj.tag - 1) / M) * V : offset;
       //            _InsertObject_seq(obj, num, point, (num - 1) * G);
-      _InsertObject_disperse(obj, num, point, (num - 1) * 4 * G);
+      //      _InsertObject_disperse(obj, num, point, (num - 1) * 4 * G);
+      return _InsertObject_disperse(obj, num, 0, offset);
       //      _InsertObject_disperse(obj, num, point, (1.0 * (num - 1) / 3) * V + G);
       //            _InsertObject_disperse(obj, num, 0, (1.0 * (num - 1) / 3) * V);
     }
@@ -577,11 +585,27 @@ private:
 
   map<int, int> debug_req_times[MAX_OBJECT_BLOCK_NUM];
 
+  // 统计每个tag的读写删除次数
+  int tag_write_cnt[MAX_TAG_NUM][(MAX_TIME_NUM - 1) / FRE_PER_SLICING + 10];
+  int tag_read_cnt[MAX_TAG_NUM][(MAX_TIME_NUM - 1) / FRE_PER_SLICING + 10];
+  int tag_delete_cnt[MAX_TAG_NUM][(MAX_TIME_NUM - 1) / FRE_PER_SLICING + 10];
+  int tag_write_sum[MAX_TAG_NUM];
+  int tag_read_sum[MAX_TAG_NUM];
+  int tag_delete_sum[MAX_TAG_NUM];
+
+  // 预处理出每个tag的写入位置
+  struct write_pos {
+    int disk_id;
+    int start_pos;
+  };
+  vector<write_pos> tag_write_pos[MAX_TAG_NUM][REP_NUM + 1];
+
 public:
-  void Init_Global_Var() override {
+  void
+  Init_Global_Var() override {
     // 初始化硬盘
     for (int i = 1; i <= N; i++) {
-      disks[i] = make_unique<Disk>(i, V, G);
+      disks[i] = make_unique<Disk>(i);
     }
   }
 
@@ -589,19 +613,22 @@ public:
   int Input_Global_Tag_Info() override {
     for (int i = 1; i <= M; i++) {
       for (int j = 1; j <= (T - 1) / FRE_PER_SLICING + 1; j++) {
-        scanf("%*d");
+        scanf("%d", &tag_delete_cnt[i][j]);
+        tag_delete_sum[i] += tag_delete_cnt[i][j];
       }
     }
 
     for (int i = 1; i <= M; i++) {
       for (int j = 1; j <= (T - 1) / FRE_PER_SLICING + 1; j++) {
-        scanf("%*d");
+        scanf("%d", &tag_write_cnt[i][j]);
+        tag_write_sum[i] += tag_write_cnt[i][j];
       }
     }
 
     for (int i = 1; i <= M; i++) {
       for (int j = 1; j <= (T - 1) / FRE_PER_SLICING + 1; j++) {
-        scanf("%*d");
+        scanf("%d", &tag_read_cnt[i][j]);
+        tag_read_sum[i] += tag_read_cnt[i][j];
       }
     }
 
@@ -611,6 +638,37 @@ public:
   }
 
   int Init_Global_Tag_Info() override {
+    // 已知每个tag一共有多少个对象块被写入，初始化时确定每个tag写到哪个磁盘上，同时确定写入开始的位置
+    pair<int, int> disk_free_cnt[MAX_DISK_NUM];
+    for (int i = 1; i <= N; i++) {
+      disk_free_cnt[i] = {V, i};
+    }
+    for (int i = 1; i <= M; i++) {
+      int curr_write_cnt = tag_write_sum[i] - tag_delete_sum[i];
+      while (curr_write_cnt > 0) {
+        sort(disk_free_cnt + 1, disk_free_cnt + N + 1, [&](const pair<int, int> &a, const pair<int, int> &b) {
+          return a.first > b.first;
+        });
+        int curr_can_write_cnt = disk_free_cnt[REP_NUM].first;        // 此时磁盘能写入的最大对象块数
+        int curr_write_cnt_ = min(curr_can_write_cnt, curr_write_cnt);//
+
+
+        for (int j = 1; j <= REP_NUM; j++) {
+          tag_write_pos[i][j].push_back({disk_free_cnt[j].second, V - disk_free_cnt[j].first});
+          disk_free_cnt[j].first -= curr_write_cnt_;
+        }
+        curr_write_cnt -= curr_write_cnt_;
+      }
+    }
+    for (int i = 1; i <= M; i++) {
+      print_log("tag %d write_sum: %d\n", i, tag_write_sum[i]);
+      for (int j = 1; j <= REP_NUM; j++) {
+        print_log("replica %d: \n", j);
+        for (const auto &pos: tag_write_pos[i][j]) {
+          print_log("disk %d start_pos: %d\n", pos.disk_id, pos.start_pos);
+        }
+      }
+    }
     return 0;
   }
 
@@ -681,15 +739,56 @@ public:
 
       // TODO(决策点): 选REP_NUM个不同的硬盘，返回一个数组array<int, REP_NUM + 1>，表示选择的硬盘编号。
       auto get_disks_num = [&]() {
-        vector<pair<int, int>> disk_free_cnt;
-        for (int j = 1; j <= N; j++) {
-          //          disk_free_cnt.emplace_back(make_pair(disks[j]->Get_range_free_cnt(), j));// 选择磁头后G个位置空闲最多的磁盘。
-          disk_free_cnt.emplace_back(make_pair(disks[j]->Get_free_unit_cnt(), j));// 选择空闲空间最多的磁盘。
+        array<int, REP_NUM + 1> disks_num = {0};
+        // 选择REP_NUM个不同的硬盘
+        for (int j = 1; j <= REP_NUM; j++) {
+          int target_disk_id = -1;
+          for (int k = 0; k < tag_write_pos[objects[id].tag][j].size(); k++) {
+            int curr_disk_id = tag_write_pos[objects[id].tag][j][k].disk_id;
+            if (disks[curr_disk_id]->Get_free_unit_cnt() >= size) {
+              target_disk_id = curr_disk_id;
+              break;
+            }
+          }
+          disks_num[j] = target_disk_id;
         }
-        sort(disk_free_cnt.begin(), disk_free_cnt.end(), [&](const pair<int, int> &a, const pair<int, int> &b) {
-          return a.first > b.first;
-        });
-        return array<int, REP_NUM + 1>{0, disk_free_cnt[0].second, disk_free_cnt[1].second, disk_free_cnt[2].second};
+        // 兜底：如果预选的磁盘没有足够的空间，选择剩余的磁盘
+        for (int j = 1; j <= REP_NUM; j++) {
+          if (disks_num[j] != -1) continue;
+          int target_disk_id = -1;
+          for (int k = 1; k <= N; k++) {
+            // 如果第k个磁盘之前已经选择过了，跳过
+            if (k == disks_num[1] || k == disks_num[2] || k == disks_num[3]) {
+              continue;
+            }
+            if (target_disk_id == -1 || disks[k]->Get_free_unit_cnt() > disks[target_disk_id]->Get_free_unit_cnt()) {
+              target_disk_id = k;
+            }
+          }
+          if (disks[target_disk_id]->Get_free_unit_cnt() < size) {
+            target_disk_id = -1;
+          }
+          if (target_disk_id == -1) {
+            cerr << "Insert object " << id << " failed, no disk has enough free space!" << endl;
+            assert(false);
+          } else {
+            disks_num[j] = target_disk_id;
+          }
+        }
+
+        // 确保选择的磁盘不重复
+        for (int j = 1; j <= REP_NUM; j++) {
+          for (int k = j + 1; k <= REP_NUM; k++) {
+            if (disks_num[j] == disks_num[k]) {
+              cerr << "Insert object " << id << " failed, disks_num is not unique!" << endl;
+              for (int l = 1; l <= REP_NUM; l++) {
+                cerr << disks_num[l] << " ";
+              }
+              assert(false);
+            }
+          }
+        }
+        return disks_num;
       };
 
       auto disks_num = get_disks_num();
@@ -697,7 +796,7 @@ public:
       for (int j = 1; j <= REP_NUM; j++) {
         objects[id].replica[j] = disks_num[j];
         objects[id].unit[j] = static_cast<int *>(malloc(sizeof(int) * (size + 1)));
-        disks[disks_num[j]]->InsertObject(objects[id], j);
+        disks[disks_num[j]]->InsertObject(objects[id], j, tag_write_pos[objects[id].tag][j][0].start_pos);
       }
 
       printf("%d\n", id);
@@ -722,7 +821,8 @@ public:
     fflush(stdout);
   }
 
-  void Read_action() override {
+  void
+  Read_action() override {
     int n_read;
     int request_id, object_id;
     scanf("%d", &n_read);
@@ -812,6 +912,20 @@ public:
   }
 
   void End() override {
+    int total_write = 0, total_read = 0, total_delete = 0;
+    for (int tag = 1; tag <= M; tag++) {
+      print_log("tag %d write sum: %d\n", tag, tag_write_sum[tag]);
+      print_log("tag %d read sum: %d\n", tag, tag_read_sum[tag]);
+      print_log("tag %d delete sum: %d\n", tag, tag_delete_sum[tag]);
+      total_write += tag_write_sum[tag];
+      total_read += tag_read_sum[tag];
+      total_delete += tag_delete_sum[tag];
+    }
+    print_log("total write: %d\n", 3 * total_write);
+    print_log("total read: %d\n", total_read);
+    print_log("total delete: %d\n", 3 * total_delete);
+    print_log("total unit size: %d\n", V * N);
+
     for (int i = 1; i < MAX_OBJECT_BLOCK_NUM; i++) {
       print_log("obj size: %d\n", i);
       int total_time = 0;
