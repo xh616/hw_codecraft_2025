@@ -49,6 +49,9 @@ public:
   // 返回策略名称，DEBUG用。
   virtual std::string name() = 0;
 
+  // 输出统计信息，DEBUG用。
+  virtual void End() {};
+
   // 析构
   virtual ~IHandler() = default;
 };

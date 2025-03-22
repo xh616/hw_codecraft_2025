@@ -1,13 +1,14 @@
-#define DEBUG
+//#define DEBUG
 
 #include "common.h"
 
 #include "HandlerImpl_sample.h"
 #include "HandlerImpl_tzx.h"
+#include "HandlerImpl_tzx2.h"
 
 int main() {
   unique_ptr<IHandler> handler;
-  handler = make_unique<HandlerImpl_tzx>();
+  handler = make_unique<HandlerImpl_tzx2>();
 
 #ifdef DEBUG
   print_log("DEBUG MODE, main() start, handler: %s\n", handler->name().c_str());
@@ -30,5 +31,6 @@ int main() {
     handler->Read_action();
   }
 
+//  handler->End();
   return 0;
 }
