@@ -26,6 +26,7 @@ using namespace std;
 #define FRE_PER_SLICING (1800)
 #define EXTRA_TIME (105)
 #define MAX_OBJECT_BLOCK_NUM (5 + 1)
+#define INF (0x3f3f3f3f)
 
 // global variables
 // timestamp：当前时间戳
@@ -42,6 +43,27 @@ int V;
 int G;
 
 // global functions
+
+// 得分公式
+
+static inline double f_(int timestamp) {
+  if (timestamp >= 0 && timestamp <= 10) {
+    return -0.005 * timestamp + 1.0;
+  } else if (timestamp > 10 && timestamp <= 105) {
+    return -0.01 * timestamp + 1.05;
+  } else if (timestamp > 105) {
+    return 0.0;
+  } else {
+    // timestamp < 0 的情况
+    return 0.0;
+  }
+}
+
+
+static inline double g_(int size) {
+  return 0.5 * (size + 1);
+}
+
 static inline void print_log(const char *format, ...) {
   va_list args;
   va_start(args, format);

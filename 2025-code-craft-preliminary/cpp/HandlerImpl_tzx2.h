@@ -117,22 +117,7 @@ private:
       int block_id;
     } unit[MAX_DISK_SIZE];
     map<int, list<pair<Request *, Request::SubBlockRequest *>>> unitId2Request_SubBlockRequests;
-    //    struct subRequest_key {
-    //      int obj_size;
-    //      int timestamp;
-    //      int unit_id;
-    //      // 重载小于号
-    //      bool operator<(const subRequest_key &other) const {
-    //        if (obj_size != other.obj_size) {
-    //          return obj_size > other.obj_size;
-    //        }
-    //        if (timestamp != other.timestamp) {
-    //          return timestamp < other.timestamp;
-    //        }
-    //        return unit_id < other.unit_id;
-    //      }
-    //    };
-    //    set<subRequest_key> subRequest_set;// 按照对象大小和时间戳排序的子请求集合
+
     int used[MAX_DISK_SIZE];
     // 当前磁头位置，初始值为1
     int point;
@@ -141,48 +126,92 @@ private:
 
     // 线段树，叶子节点为0表示空闲，1表示已使用。
     struct SegmentTreeNode {
-      int used_unit_cnt;// [l, r]区间内使用的unit数量
-      int req_cnt;      // [l, r]区间内请求的数量
+      int used_unit_cnt;   // [l, r]区间内使用的unit数量
+      double req_size_cnt; // [l, r]区间内所有请求的对象块大小之和
+      double req_score_cnt;// [l, r]区间内所有请求的预期得分之和
       SegmentTreeNode operator+(const SegmentTreeNode &other) const {
-        return {used_unit_cnt + other.used_unit_cnt, req_cnt + other.req_cnt};
+        return {used_unit_cnt + other.used_unit_cnt, req_size_cnt + other.req_size_cnt,
+                req_score_cnt + other.req_score_cnt};
       }
     } seg[4 * MAX_DISK_SIZE];
     // 更新线段树，pos位置的值更新为value。
-    void update(int idx, int l, int r, int pos, int used_unit_cnt, int req_cnt) {
+    void update(int idx, int l, int r, int pos, int used_unit_cnt) {
       if (l == r) {
-        seg[idx] = {used_unit_cnt, req_cnt};
+        seg[idx] = {used_unit_cnt, 0, 0};
       } else {
         int mid = (l + r) >> 1;
         if (pos <= mid)
-          update(idx << 1, l, mid, pos, used_unit_cnt, req_cnt);
+          update(idx << 1, l, mid, pos, used_unit_cnt);
         else
-          update(idx << 1 | 1, mid + 1, r, pos, used_unit_cnt, req_cnt);
+          update(idx << 1 | 1, mid + 1, r, pos, used_unit_cnt);
         seg[idx] = seg[idx << 1] + seg[idx << 1 | 1];
       }
     }
-    // 更新线段树，pos位置的请求数量加上req_cnt，若果req_cnt为0，则置为0。
-    void update_req(int idx, int l, int r, int pos, int req_cnt) {
+
+    // 更新线段树，pos位置更新一个请求的期望得分。
+    void update_req(int idx, int l, int r, int pos, int req_object_size, int req_timestamp) {
       if (l == r) {
-        if (req_cnt == 0) {
-          seg[idx].req_cnt = 0;
+        if (req_timestamp == 0) {
+          seg[idx].req_size_cnt = 0;
+          seg[idx].req_score_cnt = 0;
         } else {
-          seg[idx].req_cnt += req_cnt;
+          if (req_object_size < 0) {// 删除请求
+            seg[idx].req_size_cnt += -1.0 * g_(abs(req_object_size));
+            seg[idx].req_score_cnt += -1.0 * f_(req_timestamp) * g_(abs(req_object_size));
+
+            if (seg[idx].req_size_cnt < 0) {
+              seg[idx].req_size_cnt = 0;
+            }
+            if (seg[idx].req_score_cnt < 0) {
+              seg[idx].req_score_cnt = 0;
+            }
+          } else {
+            seg[idx].req_size_cnt += 1.0 * g_(abs(req_object_size));
+            seg[idx].req_score_cnt += 1.0 * f_(0) * g_(abs(req_object_size));
+          }
         }
       } else {
         int mid = (l + r) >> 1;
         if (pos <= mid)
-          update_req(idx << 1, l, mid, pos, req_cnt);
+          update_req(idx << 1, l, mid, pos, req_object_size, req_timestamp);
         else
-          update_req(idx << 1 | 1, mid + 1, r, pos, req_cnt);
+          update_req(idx << 1 | 1, mid + 1, r, pos, req_object_size, req_timestamp);
         seg[idx] = seg[idx << 1] + seg[idx << 1 | 1];
       }
     }
+
+    // 每秒更新一次线段树，区间内每个请求期望得分-=0.01
+    void update_range(int idx, int l, int r) {
+      if (seg[idx].req_size_cnt < 0.1) {
+        return;
+      }
+      if (l == r) {
+        seg[idx].req_score_cnt -= 0.01 * seg[idx].req_size_cnt;
+        if (seg[idx].req_score_cnt < 0) {
+          seg[idx].req_score_cnt = 0;
+        }
+      } else {
+        int mid = (l + r) >> 1;
+        update_range(idx << 1, l, mid);
+        update_range(idx << 1 | 1, mid + 1, r);
+        seg[idx] = seg[idx << 1] + seg[idx << 1 | 1];
+      }
+    }
+
     // Query the sum in [ql, qr].
     SegmentTreeNode query(int idx, int l, int r, int ql, int qr) const {
-      if (qr < l || r < ql) return {0, 0};
-      if (ql <= l && r <= qr) return seg[idx];
+      if (ql <= l && r <= qr) {
+        return seg[idx];
+      }
       int mid = (l + r) >> 1;
-      return query(idx << 1, l, mid, ql, qr) + query(idx << 1 | 1, mid + 1, r, ql, qr);
+      SegmentTreeNode res = {0, 0};
+      if (ql <= mid) {
+        res = res + query(idx << 1, l, mid, ql, qr);
+      }
+      if (qr > mid) {
+        res = res + query(idx << 1 | 1, mid + 1, r, ql, qr);
+      }
+      return res;
     }
 
     auto use_unit(int unit_id, int object_id, int block_id) {
@@ -190,7 +219,7 @@ private:
       unit[unit_id] = {unit_id, object_id, block_id};
       used[unit_id] = 1;
       // now update segtree: used flag becomes 1.
-      update(1, 1, V, unit_id, 1, 0);
+      update(1, 1, V, unit_id, 1);
     }
 
 
@@ -209,19 +238,12 @@ private:
       unit[unit_id] = {unit_id, -1, -1};
       // 删除unit_id上挂载的读请求
       unitId2Request_SubBlockRequests.erase(unit_id);
-      // 删除subRequest_set中unit_id对应的子请求
-      //      for (auto it = subRequest_set.begin(); it != subRequest_set.end();) {
-      //        if (it->unit_id == unit_id) {
-      //          it = subRequest_set.erase(it);
-      //        } else {
-      //          ++it;
-      //        }
-      //      }
+
 
       used[unit_id] = 0;
 
       // update segtree: used flag becomes 0.
-      update(1, 1, V, unit_id, 0, 0);
+      update(1, 1, V, unit_id, 0);
     }
 
     // Return how many used units in the range of len positions starting from pos (circularly).
@@ -241,21 +263,21 @@ private:
       return total_used;
     }
 
-    // Return how many requests in the range of len positions starting from pos (circularly).
-    auto get_range_req_cnt(int pos, int len) const {
-      int total_req = 0;
+    // 返回pos位置开始len个位置的请求期望得分之和
+    auto get_range_req_score_sum(int pos, int len) const {
+      double score_sum = 0;
       if (len >= V) {
-        total_req = seg[1].req_cnt;
+        score_sum = seg[1].req_score_cnt;
       } else {
         int end = pos + len - 1;
         if (end <= V) {
-          total_req = query(1, 1, V, pos, end).req_cnt;
+          score_sum = query(1, 1, V, pos, end).req_score_cnt;
         } else {
-          total_req = query(1, 1, V, pos, V).req_cnt;
-          total_req += query(1, 1, V, 1, end - V).req_cnt;
+          score_sum = query(1, 1, V, pos, V).req_score_cnt;
+          score_sum += query(1, 1, V, 1, end - V).req_score_cnt;
         }
       }
-      return total_req;
+      return score_sum;
     }
 
     // Return how many free units in the range of len(default G) positions starting from point.
@@ -327,15 +349,14 @@ private:
       assert(unit[sub_request.unit_id].block_id == sub_request.block_id);
       // 将子请求添加到unitId2SubBlockRequests中
       unitId2Request_SubBlockRequests[sub_request.unit_id].push_back({&request, &sub_request});
-      // 将子请求添加到request_set中
-      //      subRequest_set.insert({request.object_size, request.req_timestamp, sub_request.unit_id});
       // 更新线段树
-      update_req(1, 1, V, sub_request.unit_id, 1);
+      update_req(1, 1, V, sub_request.unit_id, request.object_size, request.req_timestamp);
     }
 
     // TODO(决策点): 磁头如何工作？返回动作序列，以#结尾。
     auto Work(int timestamp) -> string {
       g = G;
+      update_range(1, 1, V);// 每秒更新一次线段树，区间内每个请求期望得分-=0.01*obj_size
       stringstream ss;
 
       // 移除过期的请求，过期的请求是指已经过了105个时间片的请求。
@@ -349,7 +370,7 @@ private:
               //              request->finish_sub_request(sub_request->block_id);
               it2 = Request_SubBlockRequests.erase(it2);
               // 维护线段树，删除当前unit_id的请求
-              update_req(1, 1, V, it->first, -1);
+              update_req(1, 1, V, it->first, -request->object_size, request->req_timestamp);
             } else {
               ++it2;
             }
@@ -363,6 +384,30 @@ private:
       };
       update_unitId2Request_SubBlockRequests();
 
+      if (unitId2Request_SubBlockRequests.empty()) {
+        ss << '#';
+        return ss.str();
+      }
+
+      // 当前磁头后G个位置的读请求期望得分之和
+      double curr_point_range_score_sum = get_range_req_score_sum(point, G);
+      int target_unit = -1;
+      int distance = -1;
+      // 查询全局最优的读请求分布开始位置，尝试jump到更优的位置
+      for (int i = 1; i <= V; i += max(static_cast<int>(0.01 * V), 10)) {
+        if (target_unit == -1 || get_range_req_score_sum(i, G) > get_range_req_score_sum(target_unit, G)) {
+          target_unit = i;
+        }
+      }
+
+      double magic_number = 0.3;// 越大越容易jump
+      if (Get_distance(target_unit) > G && curr_point_range_score_sum < magic_number * get_range_req_score_sum(target_unit, G)) {
+        point = target_unit;
+        is_reading = false;
+        ss << "j " << target_unit;
+        jump_times++;
+        return ss.str();
+      }
       auto next_distance = [&]() {
         if (unitId2Request_SubBlockRequests.empty()) {
           return make_pair(-1, -1);
@@ -380,34 +425,13 @@ private:
         // 磁头到下一个有读请求的unit的距离
         return make_pair(target_unit, (target_unit >= point) ? (target_unit - point) : (V - point + target_unit));
       };
-      auto [target_unit, distance] = next_distance();
-      // 如果当前磁盘没有读请求，直接返回。可以优化
+      auto ttemp = next_distance();
+      target_unit = ttemp.first;
+      distance = ttemp.second;
       if (target_unit == -1) {
         ss << '#';
         return ss.str();
       }
-#ifdef DEBUG
-      print_log("disk: %d ", id);
-      print_log("target_unit: %d, point: %d, distance: %d\n", target_unit, point, distance);
-#endif
-
-      if (distance >= G) {
-        // 下一个有请求的unit在当前磁头位置G个位置之外
-        // 将磁头移动到一个更优的位置
-
-        for (int i = 1; i <= V; i++) {
-          if (get_range_req_cnt(target_unit, G) < get_range_req_cnt(i, G)) {
-            target_unit = i;
-          }
-        }
-
-        point = target_unit;
-        is_reading = false;
-        ss << "j " << target_unit;
-        jump_times++;
-        return ss.str();
-      }
-
       while (g > 0 && distance != -1) {
         if (distance > 0 && g > 0) {
           // 磁头移动到下一个unit,p
@@ -431,7 +455,7 @@ private:
               }
               unitId2Request_SubBlockRequests.erase(point);
               // 维护线段树，删除当前unit_id的请求
-              update_req(1, 1, V, point, 0);
+              update_req(1, 1, V, point, 0, 0);
             }
             point = point % V + 1;
             // update distance to next unit_id
@@ -450,7 +474,7 @@ private:
               }
               unitId2Request_SubBlockRequests.erase(point);
               // 维护线段树，删除当前unit_id的请求
-              update_req(1, 1, V, point, 0);
+              update_req(1, 1, V, point, 0, 0);
             }
             point = point % V + 1;
             // update distance to next unit_id
@@ -472,99 +496,6 @@ private:
       return ss.str();
     }
 
-    //    auto Work() -> string {
-    //      g = G;
-    //      stringstream ss;
-    //
-    //      auto next_distance = [&]() {
-    //        if (unitId2Request_SubBlockRequests.empty() || subRequest_set.empty()) {
-    //          return make_pair(-1, -1);
-    //        }
-    //        // 找到set中第一个unit_id
-    //        const auto& it = subRequest_set.begin();
-    //        int target_unit = it->unit_id;
-    //        // 磁头到target_unit的距离
-    //        int distance = (target_unit >= point) ? (target_unit - point) : (V - point + target_unit);
-    //        return make_pair(target_unit, distance);
-    //      };
-    //      auto [target_unit, distance] = next_distance();
-    //      // 如果当前磁盘没有读请求，直接返回。可以优化
-    //      if (target_unit == -1) {
-    //        ss << '#';
-    //        return ss.str();
-    //      }
-    //
-    //      if (distance >= G) {
-    //        // 下一个有请求的unit在当前磁头位置G个位置之外，直接移动磁头到目标位置。
-    //        point = target_unit;
-    //        is_reading = false;
-    //        ss << "j " << target_unit;
-    //        return ss.str();
-    //      }
-    //
-    //      while (g > 0 && distance != -1) {
-    //#ifdef DEBUG
-    //        print_log("disk: %d ", id);
-    //        print_log("target_unit: %d, point: %d, distance: %d\n", target_unit, point, distance);
-    //#endif
-    //        if (distance > 0 && g > 0) {
-    //          // 磁头移动到下一个unit,p
-    //          is_reading = false;
-    //          ss << 'p';
-    //          point = point % V + 1;
-    //          g--;
-    //          distance--;
-    //        } else if (distance == 0) {
-    //          // 已经到达了有读请求的unit
-    //          if (!is_reading && g >= 64) {
-    //            // 磁头上一次动作不是Read
-    //            ss << 'r';
-    //            is_reading = true;
-    //            g -= 64;
-    //            pre_token = 64;
-    //
-    //            // 完成当前point下所有的读请求
-    //            for (auto &[request, sub_request]: unitId2Request_SubBlockRequests[point]) {
-    //              request->finish_sub_request(sub_request->block_id);
-    //              subRequest_set.erase({request->object_size, request->req_timestamp, point});
-    //            }
-    //            unitId2Request_SubBlockRequests.erase(point);
-    //            point = point % V + 1;
-    //            // update distance to next unit_id
-    //            auto [f, s] = next_distance();
-    //            target_unit = f;
-    //            distance = s;
-    //          } else if (is_reading && g >= max(16.0, ceil(pre_token * 0.8))) {
-    //            ss << 'r';
-    //            int need_token = max(16.0, ceil(pre_token * 0.8));
-    //            g -= need_token + 1;
-    //            pre_token = need_token;
-    //
-    //            // 完成当前point下所有的读请求
-    //            for (auto &[request, sub_request]: unitId2Request_SubBlockRequests[point]) {
-    //              request->finish_sub_request(sub_request->block_id);
-    //              subRequest_set.erase({request->object_size, request->req_timestamp, point});
-    //            }
-    //            unitId2Request_SubBlockRequests.erase(point);
-    //            point = point % V + 1;
-    //            // update distance to next unit_id
-    //            auto [f, s] = next_distance();
-    //            target_unit = f;
-    //            distance = s;
-    //          } else {
-    //            // 剩余token不足，磁头不动
-    //            break;
-    //          }
-    //        }
-    //      }
-    //
-    //      ss << '#';
-    //#ifdef DEBUG
-    //      print_log("disk %d, point: %d, g: %d\n", id, point, g);
-    //      print_log("%s\n", ss.str().c_str());
-    //#endif
-    //      return ss.str();
-    //    }
 
     auto Print() {
       print_log("Disk %d, point: %d, is_reading: %s\n", id, point, is_reading ? "↓" : "↑");
@@ -660,15 +591,15 @@ public:
         curr_write_cnt -= curr_write_cnt_;
       }
     }
-    for (int i = 1; i <= M; i++) {
-      print_log("tag %d write_sum: %d\n", i, tag_write_sum[i]);
-      for (int j = 1; j <= REP_NUM; j++) {
-        print_log("replica %d: \n", j);
-        for (const auto &pos: tag_write_pos[i][j]) {
-          print_log("disk %d start_pos: %d\n", pos.disk_id, pos.start_pos);
-        }
-      }
-    }
+    //    for (int i = 1; i <= M; i++) {
+    //      print_log("tag %d write_sum: %d\n", i, tag_write_sum[i]);
+    //      for (int j = 1; j <= REP_NUM; j++) {
+    //        print_log("replica %d: \n", j);
+    //        for (const auto &pos: tag_write_pos[i][j]) {
+    //          print_log("disk %d start_pos: %d\n", pos.disk_id, pos.start_pos);
+    //        }
+    //      }
+    //    }
     return 0;
   }
 
@@ -738,6 +669,7 @@ public:
       objects[id].is_delete = false;
 
       // TODO(决策点): 选REP_NUM个不同的硬盘，返回一个数组array<int, REP_NUM + 1>，表示选择的硬盘编号。
+#if 1
       auto get_disks_num = [&]() {
         array<int, REP_NUM + 1> disks_num = {0};
         // 选择REP_NUM个不同的硬盘
@@ -798,7 +730,27 @@ public:
         objects[id].unit[j] = static_cast<int *>(malloc(sizeof(int) * (size + 1)));
         disks[disks_num[j]]->InsertObject(objects[id], j, tag_write_pos[objects[id].tag][j][0].start_pos);
       }
+#else
+      auto get_disks_num = [&]() {
+        vector<pair<int, int>> disk_free_cnt;
+        for (int j = 1; j <= N; j++) {
+          //          disk_free_cnt.emplace_back(make_pair(disks[j]->Get_range_free_cnt(), j));// 选择磁头后G个位置空闲最多的磁盘。
+          disk_free_cnt.emplace_back(make_pair(disks[j]->Get_free_unit_cnt(), j));// 选择空闲空间最多的磁盘。
+        }
+        sort(disk_free_cnt.begin(), disk_free_cnt.end(), [&](const pair<int, int> &a, const pair<int, int> &b) {
+          return a.first > b.first;
+        });
+        return array<int, REP_NUM + 1>{0, disk_free_cnt[0].second, disk_free_cnt[1].second, disk_free_cnt[2].second};
+      };
 
+      auto disks_num = get_disks_num();
+
+      for (int j = 1; j <= REP_NUM; j++) {
+        objects[id].replica[j] = disks_num[j];
+        objects[id].unit[j] = static_cast<int *>(malloc(sizeof(int) * (size + 1)));
+        disks[disks_num[j]]->InsertObject(objects[id], j);
+      }
+#endif
       printf("%d\n", id);
       for (int j = 1; j <= REP_NUM; j++) {
         printf("%d", objects[id].replica[j]);
