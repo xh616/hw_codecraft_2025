@@ -24,10 +24,10 @@ INPUT_FILE :=
 ifdef INPUT
 	INPUT_FILE += $(DATA_PATH)/$(INPUT)
 else
-	INPUT_FILE += $(DATA_PATH)/sample.in
+	INPUT_FILE += $(DATA_PATH)/practice.in
 endif
 
-# usage: make run DEBUG="1 1" REPLAY="1 2" INPUT=sample_practice.in
+# usage: make run INPUT=sample_official.in
 run: build
 	$(QUIET) echo "\033[1;34m--- Running ---\033[0m"
 	python3 run.py $(INTERACTOR_PATH)/linux/interactor $(INPUT_FILE) $(CODE_PATH)/$(EXECUTABLE) $(RUN_FLAG)

@@ -1,16 +1,11 @@
 //
-// Created by tzx on 25-3-11.
+// Created by xh on 25-3-29.
 //
 
-#ifndef HW_CODECRAFT_2025_HANDLERIMPL_TZX2_H
-#define HW_CODECRAFT_2025_HANDLERIMPL_TZX2_H
+#ifndef HW_CODECRAFT_2025_HANDLERIMPL_XH_H
+#define HW_CODECRAFT_2025_HANDLERIMPL_XH_H
 
 #include "IHandler.h"
-#include <cmath>
-#include <map>
-#include <numeric>
-#include <set>
-#include <sstream>
 
 extern int timestamp;// 当前时间戳
 extern int T;        // 时间片数量，范围 1 ≤ T ≤ 86400
@@ -20,9 +15,9 @@ extern int V;        // 每个硬盘的存储单元数，存储单元编号为1 
 extern int G;        // 每个磁头在每个时间片可消耗的令牌数，范围 64 ≤ G ≤ 1000
 
 // 并发安全的请求队列，为了方便写成全局变量
-ConcurrencyQueue<int> tzx2_request_queue;
+ConcurrencyQueue<int> xh_request_queue;
 
-class HandlerImpl_tzx2 : public IHandler {
+class HandlerImpl_xh : public IHandler {
 private:
   class Request {
   public:
@@ -75,12 +70,12 @@ private:
       return true;
     }
 
-    
+
     auto finish_sub_request(int block_id) {
       sub_block_requests[block_id].is_done = true;
       if (is_done()) {
         // 如果所有的子请求都完成了，就将这个请求放入到请求队列中
-        tzx2_request_queue.push(this->id);
+        xh_request_queue.push(this->id);
       }
     }
   };
@@ -307,48 +302,49 @@ private:
     }
 
     // 在index位置(默认为当前磁头位置point)偏移offset个位置，找到第一个能够容纳object.size个单位的位置，插入的是第num个副本。
-    auto _InsertObject_seq(const Object &obj, int num, int index = -1, int offset = 0) {
-      index = index == -1 ? point : index;
-      int current_point = (index + offset) % V + 1;
-      // 从current_point开始找，第一个能够连续容纳object.size个单位的位置。
-      while (query(1, 1, V, current_point, current_point + obj.size - 1).used_unit_cnt != 0) {
-        current_point = (current_point) % V + 1;
-      }
-      for (int i = 1; i <= obj.size; i++) {
-        int idx = ((current_point - 1) + (i - 1) + V) % V + 1;
-        use_unit(idx, obj.id, i);
-        obj.unit[num][i] = idx;
-      }
+    auto _InsertObject_seq(const Object& obj, int num, int index = -1, int offset = 0) {
+        index = index == -1 ? point : index;
+        int current_point = (index + offset) % V + 1;
+        // 从current_point开始找，第一个能够连续容纳object.size个单位的位置。
+        while (query(1, 1, V, current_point, current_point + obj.size - 1).used_unit_cnt != 0) {
+            current_point = (current_point) % V + 1;
+        }
+        for (int i = 1; i <= obj.size; i++) {
+            int idx = ((current_point - 1) + (i - 1) + V) % V + 1;
+            use_unit(idx, obj.id, i);
+            obj.unit[num][i] = idx;
+        }
     }
 
     // 在index位置(默认为当前磁头位置point)偏移offset个位置开始，一有空闲位置就插入obj对象的对象块。
-    auto _InsertObject_disperse(const Object &obj, int num, int index = -1, int offset = 0) {
-      index = index == -1 ? point : index;
-      int current_point = (index + offset) % V + 1;
-      for (int i = 1; i <= obj.size; i++) {
-        if (Get_free_unit_cnt() == 0) {
-          cerr << "Disk " << id << " is full!" << endl;
-          assert(false);
+    auto _InsertObject_disperse(const Object& obj, int num, int index = -1, int offset = 0) {
+        index = index == -1 ? point : index;
+        int current_point = (index + offset) % V + 1;
+        for (int i = 1; i <= obj.size; i++) {
+            if (Get_free_unit_cnt() == 0) {
+                cerr << "Disk " << id << " is full!" << endl;
+                assert(false);
+            }
+            int idx = ((current_point - 1) + (i - 1) + V) % V + 1;
+            // 找到第一个空闲位置
+            while (used[idx] == 1) {
+                current_point = (current_point) % V + 1;
+                idx = ((current_point - 1) + (i - 1) + V) % V + 1;
+            }
+            use_unit(idx, obj.id, i);
+            obj.unit[num][i] = idx;
         }
-        int idx = ((current_point - 1) + (i - 1) + V) % V + 1;
-        // 找到第一个空闲位置
-        while (used[idx] == 1) {
-          current_point = (current_point) % V + 1;
-          idx = ((current_point - 1) + (i - 1) + V) % V + 1;
-        }
-        use_unit(idx, obj.id, i);
-        obj.unit[num][i] = idx;
-      }
     }
 
     // TODO(决策点): 在当前磁盘插入obj对象的第num个副本。插入操作仅需分配空间，不需要移动磁头。
-    auto InsertObject(const Object &obj, int num, int offset = -1) {
-      offset = offset == -1 ? (1.0 * (obj.tag - 1) / M) * V : offset;
-      //            _InsertObject_seq(obj, num, point, (num - 1) * G);
-      //      _InsertObject_disperse(obj, num, point, (num - 1) * 4 * G);
-      return _InsertObject_disperse(obj, num, 0, offset);
-      //      _InsertObject_disperse(obj, num, point, (1.0 * (num - 1) / 3) * V + G);
-      //            _InsertObject_disperse(obj, num, 0, (1.0 * (num - 1) / 3) * V);
+    auto InsertObject(const Object& obj, int num, int offset = -1) {
+        int oldOffset = (1.0 * (obj.tag - 1) / M) * V;
+        offset = offset == -1 ? oldOffset : offset;
+        //            _InsertObject_seq(obj, num, point, (num - 1) * G);
+        //      _InsertObject_disperse(obj, num, point, (num - 1) * 4 * G);
+        return _InsertObject_disperse(obj, num, 0, offset);
+        //      _InsertObject_disperse(obj, num, point, (1.0 * (num - 1) / 3) * V + G);
+        //            _InsertObject_disperse(obj, num, 0, (1.0 * (num - 1) / 3) * V);
     }
 
     // 插入一个子请求，disk_id: 磁盘id，unit_id: 磁盘位置，block_id: 对象块号。
@@ -886,8 +882,8 @@ public:
 
     // 输出所有完成的请求id
     vector<int> finished_requests;
-    while (!tzx2_request_queue.empty()) {
-      auto request_id = tzx2_request_queue.pop();
+    while (!xh_request_queue.empty()) {
+      auto request_id = xh_request_queue.pop();
       finished_requests.push_back(request_id);
     }
     printf("%ld\n", finished_requests.size());
@@ -944,9 +940,9 @@ public:
   }
 
   std::string name() override {
-    return "HandlerImpl_tzx2";
+    return "HandlerImpl_xh";
   }
 };
 
 
-#endif//HW_CODECRAFT_2025_HANDLERIMPL_TZX2_H
+#endif//HW_CODECRAFT_2025_HANDLERIMPL_XH_H
